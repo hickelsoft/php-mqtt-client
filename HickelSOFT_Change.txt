@@ -1,5 +1,5 @@
 
-Geändert im HickelSOFT Fork https://github.com/danielmarschall/php-mqtt-client :
+Geändert im HickelSOFT Fork https://github.com/hickelsoft/php-mqtt-client :
 Nachrichten werden erst aus der Queue gelöscht,
 wenn sie korrekt verarbeitet wurden.
 
