@@ -702,11 +702,6 @@ class MqttClient implements ClientContract
     {
         // PUBLISH (incoming)
         if ($message->getType()->equals(MessageType::PUBLISH())) {
-            if ($message->getQualityOfService() === self::QOS_AT_LEAST_ONCE) {
-                // QoS 1.
-                $this->sendPublishAcknowledgement($message->getMessageId());
-            }
-
             if ($message->getQualityOfService() === self::QOS_EXACTLY_ONCE) {
                 // QoS 2, part 1.
                 try {
@@ -730,7 +725,12 @@ class MqttClient implements ClientContract
             }
 
             // For QoS 0 and QoS 1 we can deliver right away.
-            $this->deliverPublishedMessage($message->getTopic(), $message->getContent(), $message->getQualityOfService(), $message->getRetained());
+            if ($this->deliverPublishedMessage($message->getTopic(), $message->getContent(), $message->getQualityOfService(), $message->getRetained())) {
+	            if ($message->getQualityOfService() === self::QOS_AT_LEAST_ONCE) {
+	                // QoS 1.
+	                $this->sendPublishAcknowledgement($message->getMessageId());
+	            }
+            }
             return;
         }
 
@@ -882,8 +882,13 @@ class MqttClient implements ClientContract
 
     /**
      * Delivers a published message to subscribed callbacks.
+     * @param string topic
+     * @param string $message
+     * @param int    $qualityOfServiceLevel
+     * @param bool   $retained
+     * @return bool False if an Event Handler threw an Exception, True otherwise.
      */
-    protected function deliverPublishedMessage(string $topic, string $message, int $qualityOfServiceLevel, bool $retained = false): void
+    protected function deliverPublishedMessage(string $topic, string $message, int $qualityOfServiceLevel, bool $retained = false): bool
     {
         $subscribers = $this->repository->getSubscriptionsMatchingTopic($topic);
 
@@ -894,6 +899,8 @@ class MqttClient implements ClientContract
             'subscribers' => count($subscribers),
         ]);
 
+        $one_callback_failed = false;
+
         foreach ($subscribers as $subscriber) {
             if ($subscriber->getCallback() === null) {
                 continue;
@@ -902,6 +909,8 @@ class MqttClient implements ClientContract
             try {
                 call_user_func($subscriber->getCallback(), $topic, $message, $retained, $subscriber->getMatchedWildcards($topic));
             } catch (\Throwable $e) {
+                $one_callback_failed = true;
+
                 $this->logger->error('Subscriber callback threw exception for published message on topic [{topic}].', [
                     'topic' => $topic,
                     'message' => $message,
@@ -910,7 +919,7 @@ class MqttClient implements ClientContract
             }
         }
 
-        $this->runMessageReceivedEventHandlers($topic, $message, $qualityOfServiceLevel, $retained);
+        return $this->runMessageReceivedEventHandlers($topic, $message, $qualityOfServiceLevel, $retained) && !$one_callback_failed;
     }
 
     /**
@@ -969,6 +978,8 @@ class MqttClient implements ClientContract
      */
     protected function sendPublishAcknowledgement(int $messageId): void
     {
+        // HickelSOFT 08.11.2023: Hinweis: Hier auskommentieren, wenn Nachricht in der QoS1 Queue bleiben soll
+
         $this->logger->debug('Sending publish acknowledgement to the broker (message id: {messageId}).', ['messageId' => $messageId]);
 
         $this->writeToSocketWithAutoReconnect($this->messageProcessor->buildPublishAcknowledgementMessage($messageId));

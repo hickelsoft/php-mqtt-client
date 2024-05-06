@@ -1,5 +1,9 @@
 # Changelog
 
+## Fix by HickelSOFT
+
+QoS 1 should only acknowledge if the handlers did not throw an Exception
+
 ## Version `v1.0.0`
 
 Significant improvements to the architecture, API and design of the library have been part of `v1.0.0`.

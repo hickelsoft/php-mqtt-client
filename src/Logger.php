@@ -137,6 +137,10 @@ class Logger implements LoggerInterface
      */
     public function log($level, $message, array $context = []): void
     {
+        //echo "$level\n";
+        // echo $this->wrapLogMessage($message)."\n";
+        //echo $this->mergeContext($context)."\n";
+
         if ($this->logger === null) {
             return;
         }

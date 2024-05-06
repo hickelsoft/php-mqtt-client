@@ -1,0 +1,10 @@
+
+Geändert im HickelSOFT Fork https://github.com/danielmarschall/php-mqtt-client :
+Nachrichten werden erst aus der Queue gelöscht,
+wenn sie korrekt verarbeitet wurden.
+
+Der Vorschlag wurde vom Entwickler abgelehnt, siehe Kommentar im Pull Request.
+Der Entwickler möchte, dass die Nachrichten aus der Queue gelöscht
+werden, selbst wenn die Verarbeitung fehlgeschlagen ist.
+HickelSOFT möchte das unter keinen Umständen.
+https://github.com/php-mqtt/client/pull/167
