@@ -45,9 +45,10 @@ class MqttClient implements ClientContract
     public const SOCKET_READ_BUFFER_SIZE = 8192;
     private string $clientId;
     private ConnectionSettings $settings;
-    private string $buffer     = '';
-    private bool $connected    = false;
-    private ?float $lastPingAt = null;
+    private string $buffer                    = '';
+    private bool $connected                   = false;
+    private ?float $lastPingAt                = null;
+    private ?float $pingResponseExpectedUntil = null;
     private MessageProcessor $messageProcessor;
     private Repository $repository;
     private LoggerInterface $logger;
@@ -75,8 +76,8 @@ class MqttClient implements ClientContract
         private int $port = 1883,
         ?string $clientId = null,
         string $protocol = self::MQTT_3_1,
-        Repository $repository = null,
-        LoggerInterface $logger = null
+        ?Repository $repository = null,
+        ?LoggerInterface $logger = null
     )
     {
         if (!in_array($protocol, [self::MQTT_3_1, self::MQTT_3_1_1])) {
@@ -97,7 +98,7 @@ class MqttClient implements ClientContract
     /**
      * {@inheritDoc}
      */
-    public function connect(ConnectionSettings $settings = null, bool $useCleanSession = false): void
+    public function connect(?ConnectionSettings $settings = null, bool $useCleanSession = false): void
     {
         // Always abruptly close any previous connection if we are opening a new one.
         // The caller should make sure this does not happen.
@@ -489,6 +490,7 @@ class MqttClient implements ClientContract
             stream_socket_shutdown($this->socket, STREAM_SHUT_WR);
         }
 
+        $this->socket    = null;
         $this->connected = false;
     }
 
@@ -546,7 +548,7 @@ class MqttClient implements ClientContract
     /**
      * {@inheritDoc}
      */
-    public function subscribe(string $topicFilter, callable $callback = null, int $qualityOfService = self::QOS_AT_MOST_ONCE): void
+    public function subscribe(string $topicFilter, ?callable $callback = null, int $qualityOfService = self::QOS_AT_MOST_ONCE): void
     {
         $this->ensureConnected();
 
@@ -598,7 +600,7 @@ class MqttClient implements ClientContract
     /**
      * {@inheritDoc}
      */
-    public function loop(bool $allowSleep = true, bool $exitWhenQueuesEmpty = false, int $queueWaitLimit = null): void
+    public function loop(bool $allowSleep = true, bool $exitWhenQueuesEmpty = false, ?int $queueWaitLimit = null): void
     {
         $this->logger->debug('Starting client loop to process incoming messages and the resend queue.');
 
@@ -649,6 +651,10 @@ class MqttClient implements ClientContract
         // Republish messages expired without confirmation.
         // This includes published messages, subscribe and unsubscribe requests.
         $this->resendPendingMessages();
+
+        // If the last ping we sent has not been answered within the configured keep alive interval,
+        // we assume the connection is dead and try to reconnect if configured to do so.
+        $this->handlePingTimeout();
 
         // If the last message of the broker has been received more seconds ago
         // than specified by the keep alive time, we will send a ping to ensure
@@ -869,6 +875,14 @@ class MqttClient implements ClientContract
             $this->writeToSocketWithAutoReconnect($this->messageProcessor->buildPingResponseMessage());
             return;
         }
+
+        // PINGRESP
+        if ($message->getType()->equals(MessageType::PING_RESPONSE())) {
+            // Set the ping response expectation to null, so we know the broker responded.
+            $this->logger->debug('Received ping response from the broker.');
+            $this->pingResponseExpectedUntil = null;
+            return;
+        }
     }
 
     /**
@@ -1031,6 +1045,39 @@ class MqttClient implements ClientContract
         $this->logger->debug('Sending ping to the broker to keep the connection alive.');
 
         $this->writeToSocketWithAutoReconnect($this->messageProcessor->buildPingRequestMessage());
+        
+        // Set the deadline for receiving a PINGRESP message according to MQTT specification requirements.
+        $this->pingResponseExpectedUntil = microtime(true) + $this->settings->getKeepAliveInterval();
+    }
+
+    /**
+     * Handles a ping timeout by closing the socket and trying to reconnect if configured to do so.
+     *
+     * @throws DataTransferException
+     */
+    protected function handlePingTimeout(): void
+    {
+        if ($this->pingResponseExpectedUntil === null || microtime(true) < $this->pingResponseExpectedUntil) {
+            return;
+        }
+
+        $this->logger->warning(
+            'The broker did not respond to our ping request within the configured keep alive interval. Assuming the connection is dead.'
+        );
+
+        $this->closeSocket();
+
+        $this->lastPingAt                = null;
+        $this->pingResponseExpectedUntil = null;
+
+        if (!$this->settings->shouldReconnectAutomatically()) {
+            throw new DataTransferException(
+                DataTransferException::EXCEPTION_RX_DATA,
+                'No ping response received in time. The connection is dead.'
+            );
+        }
+
+        $this->reconnect();
     }
 
     /**
@@ -1155,6 +1202,14 @@ class MqttClient implements ClientContract
      */
     protected function readFromSocket(int $limit = self::SOCKET_READ_BUFFER_SIZE, bool $withoutBlocking = false): string
     {
+        if (feof($this->socket)) {
+            $this->logger->error('The socket has been closed (by the broker) and reached EOF.');
+            throw new DataTransferException(
+                DataTransferException::EXCEPTION_RX_DATA,
+                'The socket has reached EOF which indicates it has been closed by the broker.'
+            );
+        }
+
         if ($withoutBlocking) {
             $result = fread($this->socket, $limit);
 
@@ -1242,6 +1297,7 @@ class MqttClient implements ClientContract
             ]);
         }
 
-        $this->socket = null;
+        $this->socket    = null;
+        $this->connected = false;
     }
 }
